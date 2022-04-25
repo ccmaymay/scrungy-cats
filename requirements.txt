@@ -1,3 +1,4 @@
 pillow<7
+scikit-learn
 torch
 torchvision
