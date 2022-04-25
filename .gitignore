@@ -1,4 +1,5 @@
-/data/sources.csv
+/data/train/sources.csv
+/data/val/sources.csv
 
 *~
 .*.swp
