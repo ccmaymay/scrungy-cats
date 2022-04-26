@@ -8,6 +8,7 @@ https://pytorch.org/tutorials/beginner/finetuning_torchvision_models_tutorial.ht
 import copy
 import csv
 import logging
+import os
 from collections.abc import Sized
 from functools import partial
 from os import PathLike
@@ -33,8 +34,11 @@ LabelsTransform = Callable[[List[int]], Any]
 
 PHASES: Tuple[Phase, Phase] = ('train', 'val')
 LABELS_FILENAME = 'labels.csv'
+FILENAME_FIELD = 'filename'
+WEIGHTS_FILENAME = 'best.pt'
+CLASSES_FILENAME = 'classes.txt'
 DEFAULT_DATA_DIR = 'data'
-DEFAULT_SAVE_PATH = 'best.pt'
+DEFAULT_SAVE_DIR = 'model'
 DEFAULT_INPUT_SIZE = 224
 DEFAULT_BATCH_SIZE = 16
 DEFAULT_NUM_EPOCHS = 10
@@ -223,25 +227,31 @@ class CSVLabeledImageDataset(torch.utils.data.Dataset):
 
     def __init__(self,
                  data_dir: PathLike,
+                 classes: Optional[List[str]] = None,
                  transform: Optional[ImageTransform] = None,
                  target_transform: Optional[LabelsTransform] = None):
+        self.sample_infos = []
+
         labels_path = Path(data_dir) / LABELS_FILENAME
         logging.info(f'Loading labels from {labels_path}')
         with open(labels_path) as f:
-            self.classes = []
-            self.sample_infos = []
-            for row in csv.reader(f):
-                if self.classes:
-                    row_filename = row[0]
-                    row_labels = [
-                        self.classes.index(class_name)
-                        for (class_name, v) in zip(self.classes, row[1:])
-                        if int(v)
-                    ]
-                    row_path = Path(data_dir) / row_filename
-                    self.sample_infos.append(SampleInfo(row_labels, row_path))
-                else:
-                    self.classes = row[1:]
+            for row in csv.DictReader(f):
+                if classes is None:
+                    classes = sorted(k for k in row.keys() if k != FILENAME_FIELD)
+
+                row_filename = row['filename']
+                row_labels = [
+                    i
+                    for (i, class_name) in enumerate(classes)
+                    if int(row[class_name])
+                ]
+                row_path = Path(data_dir) / row_filename
+                self.sample_infos.append(SampleInfo(row_labels, row_path))
+
+        if classes is not None:
+            self.classes = classes
+        else:
+            raise Exception('Classes were not passed as parameters and could not be inferred.')
 
         self.transform = transform
         self.target_transform = target_transform
@@ -267,8 +277,14 @@ class CSVLabeledImageDataset(torch.utils.data.Dataset):
             return Image.open(f).convert('RGB')
 
 
+def save_classes(classes: List[str], path: PathLike):
+    with open(path, mode='w') as f:
+        for class_name in classes:
+            f.write(f'{class_name}\n')
+
+
 def train_model_on_csv_labeled_images(
-        save_path: Optional[PathLike] = cast(PathLike, DEFAULT_SAVE_PATH),
+        save_dir: Optional[PathLike] = cast(PathLike, DEFAULT_SAVE_DIR),
         make_model: Optional[Callable[[int, bool], nn.Module]] = None,
         make_optimizer: Optional[Callable[[Iterable[nn.Parameter]], optim.Optimizer]] = None,
         input_size: int = DEFAULT_INPUT_SIZE,
@@ -290,12 +306,14 @@ def train_model_on_csv_labeled_images(
         device = get_default_device()
 
     logging.info('Initializing data...')
-    datasets = dict(
-        (phase, CSVLabeledImageDataset(Path(data_dir) / phase))
-        for phase in PHASES)
-    transforms = get_transforms(input_size)
-    classes = datasets['train'].classes
+    val_dataset = CSVLabeledImageDataset(Path(data_dir) / 'val')
+    classes = val_dataset.classes
     num_classes = len(classes)
+    datasets = {
+        'train': CSVLabeledImageDataset(Path(data_dir) / 'train', classes=classes),
+        'val': val_dataset,
+    }
+    transforms = get_transforms(input_size)
     for phase in PHASES:
         datasets[phase].transform = transforms[phase]
         datasets[phase].target_transform = get_target_transform(num_classes)
@@ -326,9 +344,12 @@ def train_model_on_csv_labeled_images(
                         confidence_threshold=confidence_threshold, device=device)
     logging.info('Training complete.')
 
-    if save_path is not None:
-        logging.info(f'Saving model to {save_path}')
-        torch.save(model.state_dict(), save_path)
+    if save_dir is not None:
+        logging.info(f'Saving model to {save_dir}')
+        if not os.path.isdir(save_dir):
+            os.makedirs(save_dir)
+        torch.save(model.state_dict(), Path(save_dir) / WEIGHTS_FILENAME)
+        save_classes(classes, Path(save_dir) / CLASSES_FILENAME)
 
     return model
 
