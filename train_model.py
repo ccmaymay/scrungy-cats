@@ -16,8 +16,9 @@ from typing import (
     cast, Any, Callable, Dict, Iterable, List, Literal, Optional, NamedTuple, Tuple, Union,
 )
 
+import numpy as np
 from PIL import Image  # type: ignore
-from sklearn.metrics import mean_squared_error  # type: ignore
+from sklearn.metrics import mean_squared_error, precision_score, recall_score  # type: ignore
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -33,15 +34,25 @@ LabelsTransform = Callable[[List[int]], Any]
 PHASES: Tuple[Phase, Phase] = ('train', 'val')
 LABELS_FILENAME = 'labels.csv'
 DEFAULT_DATA_DIR = 'data'
+DEFAULT_SAVE_PATH = 'best.pt'
 DEFAULT_INPUT_SIZE = 224
 DEFAULT_BATCH_SIZE = 16
-DEFAULT_NUM_EPOCHS = 25
+DEFAULT_NUM_EPOCHS = 15
 DEFAULT_NUM_DATA_WORKERS = 4
+DEFAULT_CONFIDENCE_THRESHOLD = 0.25
+SCORE_AVERAGING = 'micro'
 
 
 class SampleInfo(NamedTuple):
     labels: List[int]
     path: PathLike
+
+
+class EpochResults(NamedTuple):
+    loss: float
+    mse: float
+    precision: float
+    recall: float
 
 
 def get_default_device() -> str:
@@ -53,12 +64,14 @@ def get_default_device() -> str:
 
 def do_epoch(model: nn.Module, dataloader: torch.utils.data.DataLoader, criterion: Any,
              optimizer: optim.Optimizer, is_train: bool,
-             device: Optional[Device] = None) -> Tuple[float, float]:
+             confidence_threshold: float = DEFAULT_CONFIDENCE_THRESHOLD,
+             device: Optional[Device] = None) -> EpochResults:
     if device is None:
         device = get_default_device()
 
     total_loss = 0.
-    total_error = 0.
+    total_labels: np.ndarray = np.zeros((0, 0))
+    total_outputs: np.ndarray = np.zeros((0, 0))
 
     if is_train:
         model.train()
@@ -85,16 +98,29 @@ def do_epoch(model: nn.Module, dataloader: torch.utils.data.DataLoader, criterio
                 optimizer.step()
 
         total_loss += loss.item() * inputs.size(0)
-        total_error += mean_squared_error(labels.data.numpy(), outputs.detach().cpu().numpy())
+        np_labels = labels.data.cpu().numpy()
+        np_outputs = outputs.detach().cpu().numpy()
+        if total_labels.shape[0] == 0 or total_outputs.shape[0] == 0:
+            total_labels = np_labels
+            total_outputs = np_outputs
+        else:
+            total_labels = np.concatenate((total_labels, np_labels))
+            total_outputs = np.concatenate((total_outputs, np_outputs))
 
     epoch_loss = total_loss / len(cast(Sized, dataloader.dataset))
-    epoch_error = total_error / len(cast(Sized, dataloader.dataset))
+    epoch_mse = mean_squared_error(total_labels, total_outputs)
+    epoch_precision = precision_score(total_labels, total_outputs > confidence_threshold,
+                                      average=SCORE_AVERAGING)
+    epoch_recall = recall_score(total_labels, total_outputs > confidence_threshold,
+                                average=SCORE_AVERAGING)
 
-    return (epoch_loss, epoch_error)
+    return EpochResults(loss=epoch_loss, mse=epoch_mse,
+                        precision=epoch_precision, recall=epoch_recall)
 
 
 def train_model(model: nn.Module, dataloaders: Dict[Phase, torch.utils.data.DataLoader],
                 criterion: Any, optimizer: optim.Optimizer, num_epochs: int = DEFAULT_NUM_EPOCHS,
+                confidence_threshold: float = DEFAULT_CONFIDENCE_THRESHOLD,
                 device: Optional[Device] = None) -> nn.Module:
     if device is None:
         if torch.cuda.is_available():
@@ -103,25 +129,40 @@ def train_model(model: nn.Module, dataloaders: Dict[Phase, torch.utils.data.Data
             device = 'cpu'
 
     best_params = copy.deepcopy(model.state_dict())
-    best_error = 0.
+    best_mse = 1.
+    best_precision = 0.
+    best_recall = 0.
 
     for epoch in range(num_epochs):
         logging.info(f'Starting epoch {epoch}/{num_epochs - 1}')
 
         # Each epoch has a training and validation phase
         for phase in PHASES:
-            (epoch_loss, epoch_error) = do_epoch(
-                model, dataloaders[phase], criterion, optimizer, phase == 'train', device)
+            epoch_results = do_epoch(
+                model, dataloaders[phase], criterion, optimizer, phase == 'train',
+                confidence_threshold=confidence_threshold, device=device)
 
-            logging.info(f'{phase} loss: {epoch_loss:.3f}, error: {epoch_error:.3f}')
+            logging.info(
+                f'{phase} loss: {epoch_results.loss:.3f}, MSE: {epoch_results.mse:.3f}, '
+                f'precision: {epoch_results.precision:.3f}, recall: {epoch_results.recall:.3f}')
 
             # deep copy the model
             if phase == 'val':
-                if epoch_error < best_error:
-                    best_error = epoch_error
+                if epoch_results.mse < best_mse:
                     best_params = copy.deepcopy(model.state_dict())
+                    best_mse = epoch_results.mse
+                    best_precision = epoch_results.precision
+                    best_recall = epoch_results.recall
 
-    logging.info('Best val error: {:.3f}'.format(best_error))
+    logging.info(f'Best val MSE: {best_mse:.3f}')
+    logging.info(
+        'Best val precision '
+        f'({SCORE_AVERAGING} avg.; conf. threshold {confidence_threshold:.2f}): '
+        f'{best_precision:.3f}')
+    logging.info(
+        'Best val recall '
+        f'({SCORE_AVERAGING} avg.; conf. threshold {confidence_threshold:.2f}): '
+        f'{best_recall:.3f}')
 
     # load best model weights
     model.load_state_dict(best_params)
@@ -227,6 +268,7 @@ class CSVLabeledImageDataset(torch.utils.data.Dataset):
 
 
 def train_model_on_csv_labeled_images(
+        save_path: Optional[PathLike] = cast(PathLike, DEFAULT_SAVE_PATH),
         make_model: Optional[Callable[[int, bool], nn.Module]] = None,
         make_optimizer: Optional[Callable[[Iterable[nn.Parameter]], optim.Optimizer]] = None,
         input_size: int = DEFAULT_INPUT_SIZE,
@@ -235,6 +277,7 @@ def train_model_on_csv_labeled_images(
         num_data_workers: int = DEFAULT_NUM_DATA_WORKERS,
         batch_size: int = DEFAULT_BATCH_SIZE,
         num_epochs: int = DEFAULT_NUM_EPOCHS,
+        confidence_threshold: float = DEFAULT_CONFIDENCE_THRESHOLD,
         device: Optional[Device] = None) -> nn.Module:
 
     if make_model is None:
@@ -280,8 +323,12 @@ def train_model_on_csv_labeled_images(
 
     logging.info('Beginning training...')
     model = train_model(model, dataloaders, criterion, optimizer, num_epochs=num_epochs,
-                        device=device)
+                        confidence_threshold=confidence_threshold, device=device)
     logging.info('Training complete.')
+
+    if save_path is not None:
+        logging.info(f'Saving model to {save_path}')
+        torch.save(model.state_dict(), save_path)
 
     return model
 

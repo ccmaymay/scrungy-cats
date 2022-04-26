@@ -6,6 +6,10 @@
 .*.swo
 .DS_Store
 
+*.pt
+*.pth
+*.th
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
