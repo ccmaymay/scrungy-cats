@@ -16,6 +16,14 @@ pip install -r requirements.txt
 python train_model.py
 ```
 
+### Usage via Docker
+
+To create a Docker container for training:
+
+```
+docker run --gpus=all -it --mount type=bind,src=$PWD,dst=/app --shm-size 16G pytorch/pytorch:1.11.0-cuda11.3-cudnn8-devel bash
+```
+
 ## Testing
 
 First, install test dependencies if you do not already have them:
