@@ -37,7 +37,7 @@ DEFAULT_DATA_DIR = 'data'
 DEFAULT_SAVE_PATH = 'best.pt'
 DEFAULT_INPUT_SIZE = 224
 DEFAULT_BATCH_SIZE = 16
-DEFAULT_NUM_EPOCHS = 15
+DEFAULT_NUM_EPOCHS = 10
 DEFAULT_NUM_DATA_WORKERS = 4
 DEFAULT_CONFIDENCE_THRESHOLD = 0.25
 SCORE_AVERAGING = 'micro'
@@ -193,7 +193,7 @@ def make_sgd_optimizer(params_to_update: Iterable[nn.Parameter],
 def get_transforms(input_size: int = DEFAULT_INPUT_SIZE) -> Dict[Phase, Transform]:
     return {
         'train': transforms.Compose([
-            transforms.RandomResizedCrop(input_size),
+            transforms.RandomResizedCrop(input_size, scale=(0.5, 1.)),
             transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
