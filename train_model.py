@@ -284,6 +284,7 @@ def save_classes(classes: List[str], path: PathLike):
 
 
 def train_model_on_csv_labeled_images(
+        classes: Optional[List[str]] = None,
         save_dir: Optional[PathLike] = cast(PathLike, DEFAULT_SAVE_DIR),
         make_model: Optional[Callable[[int, bool], nn.Module]] = None,
         make_optimizer: Optional[Callable[[Iterable[nn.Parameter]], optim.Optimizer]] = None,
@@ -306,7 +307,7 @@ def train_model_on_csv_labeled_images(
         device = get_default_device()
 
     logging.info('Initializing data...')
-    val_dataset = CSVLabeledImageDataset(Path(data_dir) / 'val')
+    val_dataset = CSVLabeledImageDataset(Path(data_dir) / 'val', classes=classes)
     classes = val_dataset.classes
     num_classes = len(classes)
     datasets = {
