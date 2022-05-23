@@ -361,7 +361,20 @@ def train_model_on_csv_labeled_images(
     return model
 
 
-if __name__ == '__main__':
+def main():
+    from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
+    parser = ArgumentParser(
+        description='Train classifier of images of cats as scrunge, drill, mlem, etc. '
+                    '(as a multi-label classification task)',
+        formatter_class=ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument('--classes', type=str,
+                        help='List of classes to predict as a comma-separated list')
+    args = parser.parse_args()
     logging.basicConfig(format='[%(asctime)s] %(levelname)s [%(name)s] %(message)s',
                         level=logging.INFO)
-    train_model_on_csv_labeled_images()
+    train_model_on_csv_labeled_images(classes=args.classes.split(',') if args.classes else None)
+
+
+if __name__ == '__main__':
+    main()
