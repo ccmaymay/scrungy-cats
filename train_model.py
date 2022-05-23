@@ -126,7 +126,7 @@ def do_epoch(model: nn.Module, dataloader: torch.utils.data.DataLoader, criterio
         confidence_thresholds=list(CONFIDENCE_THRESHOLDS),
         f1=[
             f1_score(
-                total_labels, total_outputs > t, average=SCORE_AVERAGING, zero_division='0',
+                total_labels, total_outputs > t, average=SCORE_AVERAGING, zero_division=0,
             )
             for t in CONFIDENCE_THRESHOLDS
         ],
@@ -134,7 +134,7 @@ def do_epoch(model: nn.Module, dataloader: torch.utils.data.DataLoader, criterio
             classification_report(
                 total_labels, total_outputs > t,
                 target_names=cast(CSVLabeledImageDataset, dataloader.dataset).classes,
-                zero_division='0',
+                zero_division=0,
             )
             for t in CONFIDENCE_THRESHOLDS
         ],
