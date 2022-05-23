@@ -19,7 +19,7 @@ from typing import (
 
 import numpy as np
 from PIL import Image  # type: ignore
-from sklearn.metrics import mean_squared_error, precision_score, recall_score  # type: ignore
+from sklearn.metrics import f1_score, mean_squared_error, classification_report  # type: ignore
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -44,6 +44,7 @@ DEFAULT_BATCH_SIZE = 16
 DEFAULT_NUM_EPOCHS = 10
 DEFAULT_NUM_DATA_WORKERS = 4
 SCORE_AVERAGING = 'micro'
+CONFIDENCE_THRESHOLDS = tuple(i/20 for i in range(1, 10))
 
 
 class SampleInfo(NamedTuple):
@@ -54,24 +55,18 @@ class SampleInfo(NamedTuple):
 class EpochResults(NamedTuple):
     loss: float
     mse: float
-    precision: List[float]
-    recall: List[float]
+    confidence_thresholds: List[float]
+    f1: List[float]
+    report_strs: List[str]
 
-    def precision_str(self) -> str:
-        return ' '.join(f'{x:.2f}' for x in self.precision)
-
-    def recall_str(self) -> str:
-        return ' '.join(f'{x:.2f}' for x in self.recall)
+    def best_threshold_index(self) -> int:
+        return max(enumerate(self.f1), key=lambda p: p[1])[0]
 
     def __str__(self) -> str:
-        return f'''\
-Loss: {self.loss:.3f}
-MSE: {self.mse:.3f}
-Precision ({SCORE_AVERAGING} avg.; conf. thresholds 0.1:1:0.1):
-    {self.precision_str()}
-Recall ({SCORE_AVERAGING} avg.; conf. thresholds 0.1:1:0.1):
-    {self.recall_str()}
-'''
+        return f'Loss: {self.loss:.3f}\nMSE: {self.mse:.3f}\n' + '\n'.join(
+            f'Report for threshold {threshold:.2f}:\n{report_str}\n'
+            for (threshold, report_str) in zip(self.confidence_thresholds, self.report_strs)
+        )
 
 
 def get_default_device() -> str:
@@ -125,17 +120,23 @@ def do_epoch(model: nn.Module, dataloader: torch.utils.data.DataLoader, criterio
             total_labels = np.concatenate((total_labels, np_labels))
             total_outputs = np.concatenate((total_outputs, np_outputs))
 
-    confidence_thresholds = [i/10 for i in range(1, 10)]
     return EpochResults(
         loss=total_loss / len(cast(Sized, dataloader.dataset)),
         mse=mean_squared_error(total_labels, total_outputs),
-        precision=[
-            precision_score(total_labels, total_outputs > t, average=SCORE_AVERAGING)
-            for t in confidence_thresholds
+        confidence_thresholds=list(CONFIDENCE_THRESHOLDS),
+        f1=[
+            f1_score(
+                total_labels, total_outputs > t, average=SCORE_AVERAGING, zero_division='0',
+            )
+            for t in CONFIDENCE_THRESHOLDS
         ],
-        recall=[
-            recall_score(total_labels, total_outputs > t, average=SCORE_AVERAGING)
-            for t in confidence_thresholds
+        report_strs=[
+            classification_report(
+                total_labels, total_outputs > t,
+                target_names=cast(CSVLabeledImageDataset, dataloader.dataset).classes,
+                zero_division='0',
+            )
+            for t in CONFIDENCE_THRESHOLDS
         ],
     )
 
@@ -165,7 +166,7 @@ def train_model(model: nn.Module, dataloaders: Dict[Phase, torch.utils.data.Data
 
             # deep copy the model
             if phase == 'val':
-                if best_results is None or epoch_results.mse < best_results.mse:
+                if best_results is None or max(epoch_results.f1) < max(best_results.f1):
                     best_params = copy.deepcopy(model.state_dict())
                     best_results = epoch_results
 
