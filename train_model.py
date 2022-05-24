@@ -63,9 +63,10 @@ class EpochResults(NamedTuple):
         return max(enumerate(self.f1), key=lambda p: p[1])[0]
 
     def __str__(self) -> str:
-        return f'Loss: {self.loss:.3f}\nMSE: {self.mse:.3f}\n' + '\n'.join(
-            f'Report for threshold {threshold:.2f}:\n{report_str}\n'
+        return f'Loss: {self.loss:.3f}\nMSE: {self.mse:.3f}\nPer-threshold:\n' + '\n'.join(
+            f'  f(x)>{threshold:.2f} |  {report_line}'
             for (threshold, report_str) in zip(self.confidence_thresholds, self.report_strs)
+            for report_line in report_str.split('\n')
         )
 
 
