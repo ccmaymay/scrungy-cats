@@ -44,7 +44,7 @@ DEFAULT_BATCH_SIZE = 16
 DEFAULT_NUM_EPOCHS = 10
 DEFAULT_NUM_DATA_WORKERS = 4
 SCORE_AVERAGING = 'macro'
-CONFIDENCE_THRESHOLDS = tuple(i/20 for i in range(1, 10))
+CONFIDENCE_THRESHOLDS = tuple(i/100 for i in range(1, 100))
 
 
 class SampleInfo(NamedTuple):
@@ -55,18 +55,16 @@ class SampleInfo(NamedTuple):
 class EpochResults(NamedTuple):
     loss: float
     mse: float
-    confidence_thresholds: List[float]
-    f1: List[float]
-    report_strs: List[str]
-
-    def best_threshold_index(self) -> int:
-        return max(enumerate(self.f1), key=lambda p: p[1])[0]
+    confidence_threshold: float
+    f1: float
+    report_str: str
 
     def __str__(self) -> str:
-        return f'Loss: {self.loss:.3f}\nMSE: {self.mse:.3f}\nPer-threshold:\n' + '\n'.join(
-            f'  f(x)>{threshold:.2f} |  {report_line}'
-            for (threshold, report_str) in zip(self.confidence_thresholds, self.report_strs)
-            for report_line in report_str.split('\n')
+        return (
+            f'Loss: {self.loss:.3f}\n'
+            f'MSE: {self.mse:.3f}\n'
+            f'Metrics for threshold classifier f(x) > {self.confidence_threshold:.2f}:\n'
+            f'{self.report_str}'
         )
 
 
@@ -79,6 +77,7 @@ def get_default_device() -> str:
 
 def do_epoch(model: nn.Module, dataloader: torch.utils.data.DataLoader, criterion: Any,
              optimizer: optim.Optimizer, is_train: bool,
+             confidence_threshold: Optional[float] = None,
              device: Optional[Device] = None) -> EpochResults:
     if device is None:
         device = get_default_device()
@@ -121,24 +120,32 @@ def do_epoch(model: nn.Module, dataloader: torch.utils.data.DataLoader, criterio
             total_labels = np.concatenate((total_labels, np_labels))
             total_outputs = np.concatenate((total_outputs, np_outputs))
 
-    return EpochResults(
-        loss=total_loss / len(cast(Sized, dataloader.dataset)),
-        mse=mean_squared_error(total_labels, total_outputs),
-        confidence_thresholds=list(CONFIDENCE_THRESHOLDS),
-        f1=[
+    if is_train:
+        f1 = [
             f1_score(
                 total_labels, total_outputs > t, average=SCORE_AVERAGING, zero_division=0,
             )
             for t in CONFIDENCE_THRESHOLDS
-        ],
-        report_strs=[
-            classification_report(
-                total_labels, total_outputs > t,
-                target_names=cast(CSVLabeledImageDataset, dataloader.dataset).classes,
-                zero_division=0,
-            )
-            for t in CONFIDENCE_THRESHOLDS
-        ],
+        ]
+        confidence_threshold_idx = max(enumerate(f1), key=lambda p: p[1])[0]
+        confidence_threshold = CONFIDENCE_THRESHOLDS[confidence_threshold_idx]
+
+    if confidence_threshold is None:
+        raise Exception('Confidence threshold is required to compute metrics when not training')
+
+    return EpochResults(
+        loss=total_loss / len(cast(Sized, dataloader.dataset)),
+        mse=mean_squared_error(total_labels, total_outputs),
+        confidence_threshold=confidence_threshold,
+        f1=f1_score(
+            total_labels, total_outputs > confidence_threshold,
+            average=SCORE_AVERAGING, zero_division=0,
+        ),
+        report_str=classification_report(
+            total_labels, total_outputs > confidence_threshold,
+            target_names=cast(CSVLabeledImageDataset, dataloader.dataset).classes,
+            zero_division=0,
+        ),
     )
 
 
@@ -155,19 +162,25 @@ def train_model(model: nn.Module, dataloaders: Dict[Phase, torch.utils.data.Data
     best_results: Optional[EpochResults] = None
 
     for epoch in range(num_epochs):
-        logging.info(f'Starting epoch {epoch}/{num_epochs - 1}')
+        logging.info(f'Starting epoch {epoch}/{num_epochs - 1}...')
 
         # Each epoch has a training and validation phase
+        confidence_threshold: Optional[float] = None
         for phase in PHASES:
             epoch_results = do_epoch(
                 model, dataloaders[phase], criterion, optimizer, phase == 'train',
+                confidence_threshold=confidence_threshold,
                 device=device)
 
             logging.info(f'{phase} results:\n{epoch_results}')
 
-            # deep copy the model
-            if phase == 'val':
-                if best_results is None or max(epoch_results.f1) < max(best_results.f1):
+            if phase == 'train':
+                # copy the best confidence threshold for validation
+                confidence_threshold = epoch_results.confidence_threshold
+
+            elif phase == 'val':
+                # deep copy the model & results if the validation score has improved
+                if best_results is None or epoch_results.f1 > best_results.f1:
                     best_params = copy.deepcopy(model.state_dict())
                     best_results = epoch_results
 
