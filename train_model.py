@@ -45,6 +45,8 @@ DEFAULT_NUM_EPOCHS = 10
 DEFAULT_NUM_DATA_WORKERS = 4
 SCORE_AVERAGING = 'macro'
 CONFIDENCE_THRESHOLDS = tuple(i/100 for i in range(1, 100))
+LEARNING_RATE = 0.001
+MOMENTUM = 0.9
 
 
 class SampleInfo(NamedTuple):
@@ -211,7 +213,7 @@ def make_densenet_model(num_classes: int, feature_extract: bool,
 
 
 def make_sgd_optimizer(params_to_update: Iterable[nn.Parameter],
-                       lr=0.001, momentum=0.9) -> optim.Optimizer:
+                       lr: float = LEARNING_RATE, momentum: float = MOMENTUM) -> optim.Optimizer:
     return optim.SGD(params_to_update, lr=lr, momentum=momentum)
 
 
