@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 
 """
-Example usage: $ tag -l | python export_tags.py
+Example usage (from a directory containing images):
+
+  tag -l | python export_tags.py
 """
 
 import csv
@@ -19,7 +21,7 @@ def export_tags():
     for line in sys.stdin:
         line = line.strip()
         if line:
-            tokens = line.split()
+            tokens = line.split('\t')
             if len(tokens) == 1:
                 [filename] = tokens
                 tags = []
@@ -29,6 +31,8 @@ def export_tags():
             else:
                 raise Exception(f'line has unexpected number of pieces ({len(tokens)})')
 
+            filename = filename.strip()
+            tags = [t.strip() for t in tags]
             if filename_is_valid(filename):
                 all_tags_set.update(tags)
                 filename_tags[filename] = tags
